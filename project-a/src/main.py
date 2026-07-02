@@ -2,7 +2,7 @@
 
 
 def main() -> None:
-    print("Hello from Project A v1.0.0")
+    print("Hello from Project A v1.0.0    aa")
 
 
 if __name__ == "__main__":
