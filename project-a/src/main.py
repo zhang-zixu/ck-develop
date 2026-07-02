@@ -1,0 +1,9 @@
+"""Project A - 示例应用入口"""
+
+
+def main() -> None:
+    print("Hello from Project A v1.0.0")
+
+
+if __name__ == "__main__":
+    main()
