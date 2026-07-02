@@ -14,7 +14,26 @@ env:
   RELEASE_API_URL: http://127.0.0.1:8000
 
 jobs:
-  release:
+  # 先检测哪个项目有变更，两个 job 完全独立、互不影响
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      project_a: ${{ steps.filter.outputs.project_a }}
+      project_b: ${{ steps.filter.outputs.project_b }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            project_a:
+              - 'project-a/**'
+            project_b:
+              - 'project-b/**'
+
+  release-project-a:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.project_a == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,30 +57,20 @@ jobs:
             sleep 1
           done
 
-      - name: 调用 project-a 发布接口
-        id: release_a
+      - name: 发布 project-a（仅 a 有变更时执行）
+        id: release
         run: |
           RESPONSE=$(curl -sf -X POST "$RELEASE_API_URL/release/project-a")
           echo "$RESPONSE" | jq .
-          echo "changed=$(echo "$RESPONSE" | jq -r '.changed')" >> "$GITHUB_OUTPUT"
           echo "released=$(echo "$RESPONSE" | jq -r '.released')" >> "$GITHUB_OUTPUT"
           echo "tag=$(echo "$RESPONSE" | jq -r '.tag // empty')" >> "$GITHUB_OUTPUT"
 
-      - name: 调用 project-b 发布接口
-        id: release_b
-        run: |
-          RESPONSE=$(curl -sf -X POST "$RELEASE_API_URL/release/project-b")
-          echo "$RESPONSE" | jq .
-          echo "changed=$(echo "$RESPONSE" | jq -r '.changed')" >> "$GITHUB_OUTPUT"
-          echo "released=$(echo "$RESPONSE" | jq -r '.released')" >> "$GITHUB_OUTPUT"
-          echo "tag=$(echo "$RESPONSE" | jq -r '.tag // empty')" >> "$GITHUB_OUTPUT"
-
-      - name: 推送 tag 和版本提交
-        if: steps.release_a.outputs.released == 'true' || steps.release_b.outputs.released == 'true'
+      - name: 推送 a 的 tag 和版本提交
+        if: steps.release.outputs.released == 'true'
         run: git push origin main --tags
 
       - name: 登录 Container Registry
-        if: steps.release_a.outputs.released == 'true' || steps.release_b.outputs.released == 'true'
+        if: steps.release.outputs.released == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -69,21 +78,67 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 构建并推送 project-a Docker 镜像
-        if: steps.release_a.outputs.released == 'true'
+        if: steps.release.outputs.released == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./project-a
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/project-a:${{ steps.release_a.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/project-a:${{ steps.release.outputs.tag }}
             ${{ env.REGISTRY }}/${{ github.repository }}/project-a:latest
 
+  release-project-b:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.project_b == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装 Release API 依赖
+        run: pip install -r release-api/requirements.txt
+
+      - name: 启动 Release API
+        working-directory: release-api
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          for i in $(seq 1 30); do
+            curl -sf "$RELEASE_API_URL/health" && break
+            sleep 1
+          done
+
+      - name: 发布 project-b（仅 b 有变更时执行）
+        id: release
+        run: |
+          RESPONSE=$(curl -sf -X POST "$RELEASE_API_URL/release/project-b")
+          echo "$RESPONSE" | jq .
+          echo "released=$(echo "$RESPONSE" | jq -r '.released')" >> "$GITHUB_OUTPUT"
+          echo "tag=$(echo "$RESPONSE" | jq -r '.tag // empty')" >> "$GITHUB_OUTPUT"
+
+      - name: 推送 b 的 tag 和版本提交
+        if: steps.release.outputs.released == 'true'
+        run: git push origin main --tags
+
+      - name: 登录 Container Registry
+        if: steps.release.outputs.released == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: 构建并推送 project-b Docker 镜像
-        if: steps.release_b.outputs.released == 'true'
+        if: steps.release.outputs.released == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./project-b
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/project-b:${{ steps.release_b.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/project-b:${{ steps.release.outputs.tag }}
             ${{ env.REGISTRY }}/${{ github.repository }}/project-b:latest
