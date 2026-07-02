@@ -11,10 +11,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  RELEASE_API_URL: http://127.0.0.1:8000
 
 jobs:
-  # 先检测哪个项目有变更，两个 job 完全独立、互不影响
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
@@ -41,37 +39,14 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: 安装 Release API 依赖
-        run: pip install -r release-api/requirements.txt
-
-      - name: 启动 Release API
-        working-directory: release-api
-        run: |
-          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
-          for i in $(seq 1 30); do
-            curl -sf "$RELEASE_API_URL/health" && break
-            sleep 1
-          done
-
-      - name: 发布 project-a（仅 a 有变更时执行）
+      - name: 发布 project-a
         id: release
-        run: |
-          HTTP_CODE=$(curl -s -o /tmp/release-a.json -w "%{http_code}" \
-            -X POST "$RELEASE_API_URL/release/project-a?force=true")
-          cat /tmp/release-a.json | jq .
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "发布接口返回 HTTP $HTTP_CODE"
-            exit 1
-          fi
-          RESPONSE=$(cat /tmp/release-a.json)
-          echo "released=$(echo "$RESPONSE" | jq -r '.released')" >> "$GITHUB_OUTPUT"
-          echo "tag=$(echo "$RESPONSE" | jq -r '.tag // empty')" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/release-project
+        with:
+          project_dir: project-a
+          tag_prefix: a
 
-      - name: 推送 a 的 tag 和版本提交
+      - name: 推送 tag 和版本提交
         if: steps.release.outputs.released == 'true'
         run: git push origin main --tags
 
@@ -103,37 +78,14 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: 安装 Release API 依赖
-        run: pip install -r release-api/requirements.txt
-
-      - name: 启动 Release API
-        working-directory: release-api
-        run: |
-          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
-          for i in $(seq 1 30); do
-            curl -sf "$RELEASE_API_URL/health" && break
-            sleep 1
-          done
-
-      - name: 发布 project-b（仅 b 有变更时执行）
+      - name: 发布 project-b
         id: release
-        run: |
-          HTTP_CODE=$(curl -s -o /tmp/release-b.json -w "%{http_code}" \
-            -X POST "$RELEASE_API_URL/release/project-b?force=true")
-          cat /tmp/release-b.json | jq .
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "发布接口返回 HTTP $HTTP_CODE"
-            exit 1
-          fi
-          RESPONSE=$(cat /tmp/release-b.json)
-          echo "released=$(echo "$RESPONSE" | jq -r '.released')" >> "$GITHUB_OUTPUT"
-          echo "tag=$(echo "$RESPONSE" | jq -r '.tag // empty')" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/release-project
+        with:
+          project_dir: project-b
+          tag_prefix: b
 
-      - name: 推送 b 的 tag 和版本提交
+      - name: 推送 tag 和版本提交
         if: steps.release.outputs.released == 'true'
         run: git push origin main --tags
 

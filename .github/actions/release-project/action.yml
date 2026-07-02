@@ -1,0 +1,76 @@
+name: Release Project
+description: 为指定子项目计算版本、打 tag（语言无关）
+
+inputs:
+  project_dir:
+    description: 子项目目录，如 project-a
+    required: true
+  tag_prefix:
+    description: Tag 前缀，如 a
+    required: true
+
+outputs:
+  released:
+    description: 是否成功发布
+    value: ${{ steps.release.outputs.released }}
+  tag:
+    description: 创建的 tag
+    value: ${{ steps.release.outputs.tag }}
+  version:
+    description: 版本号
+    value: ${{ steps.release.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: 计算版本并打 tag
+      id: release
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        PROJECT_DIR="${{ inputs.project_dir }}"
+        PREFIX="${{ inputs.tag_prefix }}"
+        VERSION_FILE="${PROJECT_DIR}/VERSION"
+        TAG_PATTERN="${PREFIX}-v*"
+
+        LATEST_TAG=$(git tag -l "${TAG_PATTERN}" --sort=-v:refname | head -n1 || true)
+
+        if [ -z "$LATEST_TAG" ]; then
+          VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
+          echo "首次发布，使用 VERSION: ${VERSION}"
+        else
+          CURRENT="${LATEST_TAG#${PREFIX}-v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          PATCH=$((PATCH + 1))
+          VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "基于 ${LATEST_TAG} 递增 -> ${VERSION}"
+        fi
+
+        NEW_TAG="${PREFIX}-v${VERSION}"
+
+        if git tag -l "$NEW_TAG" | grep -q .; then
+          echo "tag ${NEW_TAG} 已存在，跳过"
+          echo "released=false" >> "$GITHUB_OUTPUT"
+          echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        OLD_CONTENT=$(cat "$VERSION_FILE" 2>/dev/null || true)
+        echo "${VERSION}" > "$VERSION_FILE"
+
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        if [ "$(echo -n "$OLD_CONTENT" | tr -d '[:space:]')" != "$VERSION" ]; then
+          git add "$VERSION_FILE"
+          git commit -m "chore(${PREFIX}): bump version to ${VERSION} [skip ci]"
+        fi
+
+        git tag -a "$NEW_TAG" -m "Release ${PREFIX} v${VERSION}"
+
+        echo "released=true" >> "$GITHUB_OUTPUT"
+        echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+        echo "已创建 tag: ${NEW_TAG}"
