@@ -60,8 +60,14 @@ jobs:
       - name: 发布 project-a（仅 a 有变更时执行）
         id: release
         run: |
-          RESPONSE=$(curl -sf -X POST "$RELEASE_API_URL/release/project-a")
-          echo "$RESPONSE" | jq .
+          HTTP_CODE=$(curl -s -o /tmp/release-a.json -w "%{http_code}" \
+            -X POST "$RELEASE_API_URL/release/project-a?force=true")
+          cat /tmp/release-a.json | jq .
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "发布接口返回 HTTP $HTTP_CODE"
+            exit 1
+          fi
+          RESPONSE=$(cat /tmp/release-a.json)
           echo "released=$(echo "$RESPONSE" | jq -r '.released')" >> "$GITHUB_OUTPUT"
           echo "tag=$(echo "$RESPONSE" | jq -r '.tag // empty')" >> "$GITHUB_OUTPUT"
 
@@ -116,8 +122,14 @@ jobs:
       - name: 发布 project-b（仅 b 有变更时执行）
         id: release
         run: |
-          RESPONSE=$(curl -sf -X POST "$RELEASE_API_URL/release/project-b")
-          echo "$RESPONSE" | jq .
+          HTTP_CODE=$(curl -s -o /tmp/release-b.json -w "%{http_code}" \
+            -X POST "$RELEASE_API_URL/release/project-b?force=true")
+          cat /tmp/release-b.json | jq .
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "发布接口返回 HTTP $HTTP_CODE"
+            exit 1
+          fi
+          RESPONSE=$(cat /tmp/release-b.json)
           echo "released=$(echo "$RESPONSE" | jq -r '.released')" >> "$GITHUB_OUTPUT"
           echo "tag=$(echo "$RESPONSE" | jq -r '.tag // empty')" >> "$GITHUB_OUTPUT"
 

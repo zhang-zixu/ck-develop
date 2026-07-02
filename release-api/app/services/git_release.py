@@ -117,15 +117,33 @@ def release_project(project_key: str, force: bool = False) -> ReleaseResult:
 
     version, new_tag, version_message = _next_version(project_dir, tag_prefix)
     version_file = REPO_ROOT / project_dir / "VERSION"
-    version_file.write_text(f"{version}\n", encoding="utf-8")
 
-    _run_git("add", str(version_file.relative_to(REPO_ROOT)))
-    _run_git(
-        "-c", "user.name=github-actions[bot]",
-        "-c", "user.email=github-actions[bot]@users.noreply.github.com",
-        "commit",
-        "-m", f"chore({tag_prefix}): bump version to {version} [skip ci]",
-    )
+    existing_tag = _run_git("tag", "-l", new_tag, check=False)
+    if existing_tag.strip():
+        return ReleaseResult(
+            project=project_key,
+            changed=changed,
+            released=False,
+            version=version,
+            tag=new_tag,
+            changed_files=changed_files,
+            message=f"tag {new_tag} 已存在，跳过发布",
+        )
+
+    old_content = version_file.read_text(encoding="utf-8") if version_file.exists() else ""
+    new_content = f"{version}\n"
+    version_file.write_text(new_content, encoding="utf-8")
+
+    # 首次发布时 VERSION 可能已是目标版本，无需额外提交，直接打 tag 即可
+    if old_content != new_content:
+        _run_git("add", str(version_file.relative_to(REPO_ROOT)))
+        _run_git(
+            "-c", "user.name=github-actions[bot]",
+            "-c", "user.email=github-actions[bot]@users.noreply.github.com",
+            "commit",
+            "-m", f"chore({tag_prefix}): bump version to {version} [skip ci]",
+        )
+
     _run_git("tag", "-a", new_tag, "-m", f"Release {tag_prefix} v{version}")
 
     return ReleaseResult(
