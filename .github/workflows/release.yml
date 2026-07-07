@@ -88,6 +88,20 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository }}/project-a:${{ needs.release.outputs.project_a_tag }}
             ${{ env.REGISTRY }}/${{ github.repository }}/project-a:latest
 
+      # 暂时禁用：SSH 部署到服务器（需要时取消注释即可恢复）
+      # - name: Deploy to Server
+      #   uses: appleboy/ssh-action@v1.0.3
+      #   with:
+      #     host: ${{ secrets.SERVER_HOST }}
+      #     username: ${{ secrets.SERVER_USER }}
+      #     key: ${{ secrets.SERVER_KEY }}
+      #     script: |
+      #       IMAGE_NAME=$(echo "${{ env.REGISTRY }}/${{ github.repository }}/project-a:latest" | tr '[:upper:]' '[:lower:]')
+      #       docker pull $IMAGE_NAME
+      #       docker stop project-a || true
+      #       docker rm project-a || true
+      #       docker run -d --name project-a -p 8080:8080 $IMAGE_NAME
+
   docker-project-b:
     needs: release
     if: needs.release.outputs.project_b_released == 'true'
@@ -110,3 +124,17 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}/project-b:${{ needs.release.outputs.project_b_tag }}
             ${{ env.REGISTRY }}/${{ github.repository }}/project-b:latest
+
+      # 暂时禁用：SSH 部署到服务器（需要时取消注释即可恢复）
+      # - name: Deploy to Server
+      #   uses: appleboy/ssh-action@v1.0.3
+      #   with:
+      #     host: ${{ secrets.SERVER_HOST }}
+      #     username: ${{ secrets.SERVER_USER }}
+      #     key: ${{ secrets.SERVER_KEY }}
+      #     script: |
+      #       IMAGE_NAME=$(echo "${{ env.REGISTRY }}/${{ github.repository }}/project-b:latest" | tr '[:upper:]' '[:lower:]')
+      #       docker pull $IMAGE_NAME
+      #       docker stop project-b || true
+      #       docker rm project-b || true
+      #       docker run -d --name project-b -p 8080:8080 $IMAGE_NAME
