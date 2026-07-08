@@ -1,58 +1,89 @@
+# 工作流名称，会显示在 GitHub 仓库的 Actions 页面
 name: Release on Main
 
+# 触发条件：当有代码 push（推送）到 main 分支时，自动运行这个工作流
 on:
   push:
     branches:
       - main
 
+# 权限声明：授予本工作流对仓库的操作权限
 permissions:
-  contents: write
-  packages: write
+  contents: write   # 允许写仓库内容（提交 VERSION 文件、推送 tag）
+  packages: write   # 允许推送镜像到 GitHub Packages（ghcr.io 容器仓库）
 
+# 全局环境变量，下面所有 job 都能用 ${{ env.REGISTRY }} 引用
 env:
-  REGISTRY: ghcr.io
+  REGISTRY: ghcr.io   # 镜像仓库地址（GitHub Container Registry）
 
 jobs:
+  # ============================================================
+  # job 1：detect-changes —— 检测本次提交改动了哪个子项目
+  # 作用：只对「真正发生改变」的项目做后续的发版和构建，避免无谓的构建
+  # ============================================================
   detect-changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # 在 GitHub 提供的 Ubuntu 虚拟机上运行
+    # outputs：把这个 job 计算出的结果暴露出去，供后面的 job 判断使用
+    # project_a / project_b 的值为字符串 "true" 或 "false"
     outputs:
       project_a: ${{ steps.filter.outputs.project_a }}
       project_b: ${{ steps.filter.outputs.project_b }}
     steps:
+      # 第 1 步：把仓库代码拉取到虚拟机上
       - uses: actions/checkout@v4
+
+      # 第 2 步：核心！用 paths-filter 对比本次提交改了哪些文件路径
+      # id: filter —— 给这个步骤起个名字，方便上面 outputs 引用它的结果
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          # filters 定义「规则」：
+          #   如果本次改动的文件命中了 'project-a/**'（project-a 目录下任意文件），
+          #   则 steps.filter.outputs.project_a 会被设为 "true"，否则为 "false"。
+          #   project_b 同理。这就是「判断哪个项目代码发生改变」的地方。
           filters: |
             project_a:
               - 'project-a/**'
             project_b:
               - 'project-b/**'
 
-  # 所有 tag 和版本提交在同一个 job 内顺序完成，最后只 push 一次，避免并行冲突
+  # ============================================================
+  # job 2：release —— 计算版本号、打 tag、提交 VERSION 文件
+  # 说明：所有 tag 和版本提交在同一个 job 内顺序完成，最后只 push 一次，
+  #       避免两个项目并行修改 main 分支时产生冲突。
+  # ============================================================
   release:
-    needs: detect-changes
+    needs: detect-changes   # 依赖 job 1，必须等它跑完才开始
+    # if 条件：只要 project-a 或 project-b 任意一个有改动，才运行本 job
     if: needs.detect-changes.outputs.project_a == 'true' || needs.detect-changes.outputs.project_b == 'true'
     runs-on: ubuntu-latest
+    # 把发版结果（是否发布、新 tag 是多少）暴露给后面的 docker job 使用
     outputs:
       project_a_released: ${{ steps.release_a.outputs.released }}
       project_a_tag: ${{ steps.release_a.outputs.tag }}
       project_b_released: ${{ steps.release_b.outputs.released }}
       project_b_tag: ${{ steps.release_b.outputs.tag }}
     steps:
+      # 第 1 步：拉取代码
+      # fetch-depth: 0 —— 拉取完整的 git 历史和所有 tag（计算版本号时需要读取历史 tag）
+      # token —— 使用 GitHub 自动提供的令牌，让后续 git push 有推送权限
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # 第 2 步：发布 project-a
+      # 只有当 project-a 有改动时才执行（if 条件）
+      # 调用本仓库自定义的复合 action（见 .github/actions/release-project/action.yml）
       - name: 发布 project-a
         id: release_a
         if: needs.detect-changes.outputs.project_a == 'true'
         uses: ./.github/actions/release-project
         with:
-          project_dir: project-a
-          tag_prefix: a
+          project_dir: project-a   # 传入子项目目录
+          tag_prefix: a            # 传入 tag 前缀，最终 tag 形如 a-v1.0.0
 
+      # 第 3 步：发布 project-b（逻辑同上）
       - name: 发布 project-b
         id: release_b
         if: needs.detect-changes.outputs.project_b == 'true'
@@ -61,24 +92,36 @@ jobs:
           project_dir: project-b
           tag_prefix: b
 
+      # 第 4 步：把上面产生的版本提交和 tag 一次性推送回 main 分支
+      # 只要有任意一个项目成功发布了，就执行推送
       - name: 推送 tag 和版本提交
         if: steps.release_a.outputs.released == 'true' || steps.release_b.outputs.released == 'true'
         run: git push origin main --tags
 
+  # ============================================================
+  # job 3：docker-project-a —— 构建并推送 project-a 的 Docker 镜像
+  # ============================================================
   docker-project-a:
-    needs: release
+    needs: release   # 依赖 job 2，等发版完成
+    # 只有 project-a 真正发布了新版本，才构建它的镜像
     if: needs.release.outputs.project_a_released == 'true'
     runs-on: ubuntu-latest
     steps:
+      # 第 1 步：拉取代码（此时已包含 job 2 打的 tag 和更新后的 VERSION）
       - uses: actions/checkout@v4
 
+      # 第 2 步：登录容器镜像仓库 ghcr.io，才能推送镜像
       - name: 登录 Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.actor }}          # 触发者的 GitHub 用户名
+          password: ${{ secrets.GITHUB_TOKEN }}  # 自动令牌作为密码
 
+      # 第 3 步：构建 project-a 镜像并推送
+      # context —— 指定构建上下文目录（用 project-a/Dockerfile 构建）
+      # push: true —— 构建完成后直接推送到仓库
+      # tags —— 同时打两个标签：具体版本号 和 latest
       - name: 构建并推送 project-a Docker 镜像
         uses: docker/build-push-action@v6
         with:
@@ -89,26 +132,33 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository }}/project-a:latest
 
       # 暂时禁用：SSH 部署到服务器（需要时取消注释即可恢复）
+      # 作用：登录远程服务器，拉取最新镜像并重启容器，实现自动部署
       # - name: Deploy to Server
       #   uses: appleboy/ssh-action@v1.0.3
       #   with:
-      #     host: ${{ secrets.SERVER_HOST }}
-      #     username: ${{ secrets.SERVER_USER }}
-      #     key: ${{ secrets.SERVER_KEY }}
+      #     host: ${{ secrets.SERVER_HOST }}      # 服务器地址（存在 Secrets 里）
+      #     username: ${{ secrets.SERVER_USER }}  # 登录用户名
+      #     key: ${{ secrets.SERVER_KEY }}        # SSH 私钥
       #     script: |
+      #       # 镜像名转小写（ghcr.io 要求镜像名必须全小写）
       #       IMAGE_NAME=$(echo "${{ env.REGISTRY }}/${{ github.repository }}/project-a:latest" | tr '[:upper:]' '[:lower:]')
-      #       docker pull $IMAGE_NAME
-      #       docker stop project-a || true
-      #       docker rm project-a || true
-      #       docker run -d --name project-a -p 8080:8080 $IMAGE_NAME
+      #       docker pull $IMAGE_NAME                 # 拉取最新镜像
+      #       docker stop project-a || true           # 停止旧容器（不存在也不报错）
+      #       docker rm project-a || true             # 删除旧容器
+      #       docker run -d --name project-a -p 8080:8080 $IMAGE_NAME  # 后台启动新容器，映射 8080 端口
 
+  # ============================================================
+  # job 4：docker-project-b —— 构建并推送 project-b 的 Docker 镜像（逻辑同 job 3）
+  # ============================================================
   docker-project-b:
     needs: release
     if: needs.release.outputs.project_b_released == 'true'
     runs-on: ubuntu-latest
     steps:
+      # 第 1 步：拉取代码
       - uses: actions/checkout@v4
 
+      # 第 2 步：登录容器镜像仓库
       - name: 登录 Container Registry
         uses: docker/login-action@v3
         with:
@@ -116,6 +166,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 第 3 步：构建并推送 project-b 镜像
       - name: 构建并推送 project-b Docker 镜像
         uses: docker/build-push-action@v6
         with:
@@ -126,6 +177,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository }}/project-b:latest
 
       # 暂时禁用：SSH 部署到服务器（需要时取消注释即可恢复）
+      # 注意：project-b 使用 9090 端口，与 project-a 的 8080 区分开
       # - name: Deploy to Server
       #   uses: appleboy/ssh-action@v1.0.3
       #   with:
