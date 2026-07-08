@@ -1,14 +1,20 @@
+# 这是一个「自定义复合 Action」（composite action）。
+# 它把「计算版本号 + 更新 VERSION 文件 + 打 tag」这套重复逻辑封装成一个可复用组件，
+# project-a 和 project-b 都调用它，只是传入不同的目录和前缀，避免重复写脚本。
 name: Release Project
 description: 为指定子项目计算版本、打 tag（语言无关）
 
+# inputs：调用方（release.yml）需要传进来的参数
 inputs:
   project_dir:
     description: 子项目目录，如 project-a
-    required: true
+    required: true   # 必填
   tag_prefix:
     description: Tag 前缀，如 a
-    required: true
+    required: true   # 必填
 
+# outputs：本 action 执行完后返回给调用方的结果
+# 调用方通过 steps.<id>.outputs.xxx 读取这些值
 outputs:
   released:
     description: 是否成功发布
@@ -21,34 +27,45 @@ outputs:
     value: ${{ steps.release.outputs.version }}
 
 runs:
-  using: composite
+  using: composite   # 声明这是复合 action（由若干步骤组成）
   steps:
     - name: 计算版本并打 tag
       id: release
       shell: bash
       run: |
+        # set -euo pipefail：让脚本更严格、更安全
+        #   -e 命令出错就退出；-u 用到未定义变量就报错；-o pipefail 管道中任一命令失败即失败
         set -euo pipefail
 
+        # 从传入参数取值，并拼出该项目的 VERSION 文件路径和 tag 匹配模式
         PROJECT_DIR="${{ inputs.project_dir }}"
         PREFIX="${{ inputs.tag_prefix }}"
-        VERSION_FILE="${PROJECT_DIR}/VERSION"
-        TAG_PATTERN="${PREFIX}-v*"
+        VERSION_FILE="${PROJECT_DIR}/VERSION"   # 例如 project-a/VERSION
+        TAG_PATTERN="${PREFIX}-v*"              # 例如 a-v*，用来匹配该项目的所有 tag
 
+        # 查找该项目「最新的一个 tag」
+        #   git tag -l 按模式列出 tag，--sort=-v:refname 按版本号从大到小排序，head -n1 取第一个
+        #   末尾的 || true 防止没有 tag 时命令报错导致脚本退出
         LATEST_TAG=$(git tag -l "${TAG_PATTERN}" --sort=-v:refname | head -n1 || true)
 
+        # 决定本次要发布的版本号 VERSION
         if [ -z "$LATEST_TAG" ]; then
-          VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
+          # 情况一：从来没有 tag（首次发布）→ 直接读取 VERSION 文件里的版本号
+          VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")   # tr -d 去掉空白字符
           echo "首次发布，使用 VERSION: ${VERSION}"
         else
-          CURRENT="${LATEST_TAG#${PREFIX}-v}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          PATCH=$((PATCH + 1))
+          # 情况二：已有 tag → 在最新 tag 基础上自动把「补丁号」+1
+          CURRENT="${LATEST_TAG#${PREFIX}-v}"              # 去掉前缀，得到纯版本号，如 1.0.3
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT" # 按 . 拆成 主.次.补丁 三段
+          PATCH=$((PATCH + 1))                             # 补丁号 +1（1.0.3 → 1.0.4）
           VERSION="${MAJOR}.${MINOR}.${PATCH}"
           echo "基于 ${LATEST_TAG} 递增 -> ${VERSION}"
         fi
 
+        # 拼出本次要创建的新 tag，如 a-v1.0.4
         NEW_TAG="${PREFIX}-v${VERSION}"
 
+        # 安全检查：如果这个 tag 已经存在，就跳过发布（released=false 并直接退出）
         if git tag -l "$NEW_TAG" | grep -q .; then
           echo "tag ${NEW_TAG} 已存在，跳过"
           echo "released=false" >> "$GITHUB_OUTPUT"
@@ -57,20 +74,27 @@ runs:
           exit 0
         fi
 
+        # 把新版本号写回 VERSION 文件（先记下旧内容，用于后面判断是否有变化）
         OLD_CONTENT=$(cat "$VERSION_FILE" 2>/dev/null || true)
         echo "${VERSION}" > "$VERSION_FILE"
 
+        # 配置提交所用的 git 身份（用 GitHub Actions 机器人账号）
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
 
+        # 只有 VERSION 文件内容确实变了，才提交这次改动
+        #   commit 信息里的 [skip ci] 用于告诉 GitHub「这次提交不要再次触发工作流」，避免死循环
         if [ "$(echo -n "$OLD_CONTENT" | tr -d '[:space:]')" != "$VERSION" ]; then
           git add "$VERSION_FILE"
           git commit -m "chore(${PREFIX}): bump version to ${VERSION} [skip ci]"
         fi
 
+        # 创建带注释的 tag（-a 附注 tag，-m 注释信息）
         git tag -a "$NEW_TAG" -m "Release ${PREFIX} v${VERSION}"
 
+        # 把执行结果写入 $GITHUB_OUTPUT，供调用方（release.yml）读取
         echo "released=true" >> "$GITHUB_OUTPUT"
         echo "tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
         echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+        # 这行只是打印到运行日志，方便你在 Actions 日志里确认结果
         echo "已创建 tag: ${NEW_TAG}"
