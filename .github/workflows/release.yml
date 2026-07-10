@@ -15,6 +15,7 @@ permissions:
 # 全局环境变量，下面所有 job 都能用 ${{ env.REGISTRY }} 引用
 env:
   REGISTRY: ghcr.io   # 镜像仓库地址（GitHub Container Registry）
+  INFRA_REPO: zhang-zixu/ck-infra
 
 jobs:
   # ============================================================
@@ -131,21 +132,14 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository }}/project-a:${{ needs.release.outputs.project_a_tag }}
             ${{ env.REGISTRY }}/${{ github.repository }}/project-a:latest
 
-      # 暂时禁用：SSH 部署到服务器（需要时取消注释即可恢复）
-      # 作用：登录远程服务器，拉取最新镜像并重启容器，实现自动部署
-      # - name: Deploy to Server
-      #   uses: appleboy/ssh-action@v1.0.3
-      #   with:
-      #     host: ${{ secrets.SERVER_HOST }}      # 服务器地址（存在 Secrets 里）
-      #     username: ${{ secrets.SERVER_USER }}  # 登录用户名
-      #     key: ${{ secrets.SERVER_KEY }}        # SSH 私钥
-      #     script: |
-      #       # 镜像名转小写（ghcr.io 要求镜像名必须全小写）
-      #       IMAGE_NAME=$(echo "${{ env.REGISTRY }}/${{ github.repository }}/project-a:latest" | tr '[:upper:]' '[:lower:]')
-      #       docker pull $IMAGE_NAME                 # 拉取最新镜像
-      #       docker stop project-a || true           # 停止旧容器（不存在也不报错）
-      #       docker rm project-a || true             # 删除旧容器
-      #       docker run -d --name project-a -p 8080:8080 $IMAGE_NAME  # 后台启动新容器，映射 8080 端口
+      - name: 通知 ck-infra 更新镜像 tag
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INFRA_DISPATCH_TOKEN }}
+          repository: ${{ env.INFRA_REPO }}
+          event-type: image-published
+          client-payload: >-
+            {"project":"project-a","tag":"${{ needs.release.outputs.project_a_tag }}"}
 
   # ============================================================
   # job 4：docker-project-b —— 构建并推送 project-b 的 Docker 镜像（逻辑同 job 3）
@@ -175,6 +169,15 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}/project-b:${{ needs.release.outputs.project_b_tag }}
             ${{ env.REGISTRY }}/${{ github.repository }}/project-b:latest
+
+      - name: 通知 ck-infra 更新镜像 tag
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INFRA_DISPATCH_TOKEN }}
+          repository: ${{ env.INFRA_REPO }}
+          event-type: image-published
+          client-payload: >-
+            {"project":"project-b","tag":"${{ needs.release.outputs.project_b_tag }}"}
 
       # 暂时禁用：SSH 部署到服务器（需要时取消注释即可恢复）
       # 注意：project-b 使用 9090 端口，与 project-a 的 8080 区分开
