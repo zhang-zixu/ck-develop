@@ -1,7 +1,0 @@
-# 子项目通用忽略规则
-__pycache__/
-*.py[cod]
-.env
-.venv/
-dist/
-build/
